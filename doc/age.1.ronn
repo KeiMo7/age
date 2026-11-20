@@ -6,6 +6,7 @@ age(1) -- simple, modern, and secure file encryption
 `age` [`--encrypt`] (`-r` <RECIPIENT> | `-R` <PATH>)... [`--armor`] [`-o` <OUTPUT>] [<INPUT>]<br>
 `age` [`--encrypt`] `--passphrase` [`--armor`] [`-o` <OUTPUT>] [<INPUT>]<br>
 `age` `--decrypt` [`-i` <PATH> | `-j` <PLUGIN>]... [`-o` <OUTPUT>] [<INPUT>]<br>
+`age` `--batch` (`-e` | `-d`) (`-r` <RECIPIENT> | `-R` <PATH> | `-i` <PATH>)... `-o` <OUTPUT_DIR> <INPUT_DIR><br>
 
 ## DESCRIPTION
 
@@ -142,6 +143,35 @@ overhead per recipient, plus 16 bytes every 64KiB of plaintext.
     This is equivalent to using `-i`/`--identity` with a file that contains a
     single plugin `IDENTITY` that encodes no plugin-specific data.
 
+### Batch options
+
+* `--batch`:
+    Process every regular file in <INPUT_DIR> instead of a single file.
+    <INPUT_DIR> must be a directory and `-o`/`--output` must name a different,
+    writable directory, which is created if missing. The relative directory
+    structure is mirrored into <OUTPUT_DIR>: encrypting `dir/a/b.txt` produces
+    `OUTPUT_DIR/a/b.txt.age`, and decrypting strips the `.age` suffix (or
+    appends `.dec` when there is no `.age` suffix). Standard input and output,
+    `-p`/`--passphrase`, and `-j` data-less plugins are not supported.
+
+    Each file is an independent unit of work. A failure is reported with the
+    offending file and the processing stage (such as opening the input,
+    encrypting, or committing the output), and processing continues with the
+    next file. The exit status is non-zero if any file failed.
+
+    Progress is kept in `OUTPUT_DIR/.age-batch-state.json`. A file is
+    identified by its relative path together with a SHA-256 content digest, so
+    replacing a file with different content under the same name is detected.
+    The state and every output are replaced atomically (a temporary file,
+    fsync, and a rename), so killing the process leaves only complete records;
+    rerunning skips completed files and resumes the rest. Outputs are always
+    written through a temporary file and an existing, untracked output is
+    never overwritten: the corresponding input is reported as a failure.
+
+    Recipient and identity files are parsed before any input is touched, so a
+    missing or malformed key aborts the whole run at startup, and the output
+    directory is probed for writability before processing begins.
+
 ## RECIPIENTS AND IDENTITIES
 
 `RECIPIENTS` are public values, like a public key, that a file can be encrypted
@@ -260,6 +290,11 @@ If an error occurs during decryption, partial output might still be generated,
 but only if it was possible to securely authenticate it. No unauthenticated
 output is ever released.
 
+In `--batch` mode, the exit status is 0 only when every input file succeeded or
+was skipped as already completed; any per-file failure results in exit 1 after
+the full run and its summary. Startup errors (missing keys, an unwritable output
+directory, invalid arguments) exit 1 before any file is processed.
+
 ## BACKWARDS COMPATIBILITY
 
 Files encrypted with a stable version (not alpha, beta, or release candidate) of
@@ -332,6 +367,12 @@ Encrypt and decrypt with age-plugin-yubikey:
 Encrypt to the SSH keys of a GitHub user:
 
     $ curl https://github.com/benjojo.keys | age -R - example.jpg > example.jpg.age
+
+Encrypt a whole directory for transport and decrypt it elsewhere, resuming if
+interrupted:
+
+    $ age --batch -e -R recipients.txt -o backup.age-dir data-dir
+    $ age --batch -d -i key.txt -o restored-dir backup.age-dir
 
 ## SEE ALSO
 

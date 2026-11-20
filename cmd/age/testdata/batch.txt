@@ -1,0 +1,60 @@
+# Batch mode: encrypt a directory, resume after interruption, and decrypt it.
+mkdir -p in/sub/deep
+cp key.txt in/a.txt
+cp key.txt in/sub/b.txt
+cp key.txt in/sub/deep/c.txt
+
+# Normal batch encryption mirrors the directory structure.
+age --batch -e -R recipients.txt -o enc in
+exists enc/a.txt.age
+exists enc/sub/b.txt.age
+exists enc/sub/deep/c.txt.age
+exists enc/.age-batch-state.json
+stderr 'batch summary'
+! stderr '1 failed'
+
+# Rerunning is idempotent: everything is skipped, outputs are not rewritten.
+cp enc/a.txt.age before-rerun.age
+age --batch -e -R recipients.txt -o enc in
+stderr '3 skipped'
+cmp enc/a.txt.age before-rerun.age
+
+# An untracked pre-existing output is refused, not overwritten.
+mkdir -p enc2
+cp planted.age enc2/a.txt.age
+! age --batch -e -R recipients.txt -o enc2 in
+stderr 'already exists'
+cmp enc2/a.txt.age planted.age
+
+# Batch decryption restores the full tree, which then matches the input.
+age --batch -d -i key.txt -o dec enc
+! stderr '1 failed'
+cmp dec/a.txt in/a.txt
+cmp dec/sub/b.txt in/sub/b.txt
+cmp dec/sub/deep/c.txt in/sub/deep/c.txt
+
+# A fresh one-shot run into another directory produces identical plaintexts
+# after decryption: resumed/rerun artifacts are equivalent to a clean run.
+age --batch -e -R recipients.txt -o enc3 in
+age --batch -d -i key.txt -o dec3 enc3
+cmp dec3/a.txt in/a.txt
+cmp dec3/sub/deep/c.txt in/sub/deep/c.txt
+
+# Startup checks: missing key, passphrase rejection, same input/output dir.
+! age --batch -e -R does-not-exist.txt -o enc4 in
+stderr 'failed to open recipient file'
+! age --batch -p -o enc5 in
+stderr 'passphrase'
+! age --batch -e -R recipients.txt -o in in
+stderr 'must be different'
+! age --batch -e -R recipients.txt -o enc6
+stderr 'input directory'
+
+-- recipients.txt --
+age1xmwwc06ly3ee5rytxm9mflaz2u56jjj36s0mypdrwsvlul66mv4q47ryef
+-- planted.age --
+do-not-overwrite-this-file
+-- key.txt --
+# created: 2021-02-02T13:09:43+01:00
+# public key: age1xmwwc06ly3ee5rytxm9mflaz2u56jjj36s0mypdrwsvlul66mv4q47ryef
+AGE-SECRET-KEY-1EGTZVFFV20835NWYV6270LXYVK2VKNX2MMDKWYKLMGR48UAWX40Q2P2LM0
