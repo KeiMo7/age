@@ -1,0 +1,77 @@
+# no audit file is created unless --audit-log is passed
+age -r age1xmwwc06ly3ee5rytxm9mflaz2u56jjj36s0mypdrwsvlul66mv4q47ryef -o test.age input
+age -d -i key.txt test.age
+cmp stdout input
+! exists audit.jsonl
+
+# --audit-log can't be used in encryption mode
+! age --audit-log audit.jsonl -r age1xmwwc06ly3ee5rytxm9mflaz2u56jjj36s0mypdrwsvlul66mv4q47ryef -o x.age input
+stderr '--audit-log can''t be used in encryption mode'
+! exists audit.jsonl
+
+# successful decryption records the identity attempt and the file-level outcome
+age -d -i key.txt --audit-log audit.jsonl test.age
+cmp stdout input
+! stderr .
+grep '"v":1' audit.jsonl
+grep '"kind":"identity".*"identity":"age1xmwwc06ly3ee5rytxm9mflaz2u56jjj36s0mypdrwsvlul66mv4q47ryef".*"identity_type":"x25519".*"file":"test.age".*"result":"success"' audit.jsonl
+grep '"kind":"file".*"file":"test.age".*"result":"success"' audit.jsonl
+# the log contains no secret key material and no absolute paths
+! grep 'AGE-SECRET-KEY' audit.jsonl
+! grep '"file":"/' audit.jsonl
+! grep $WORK audit.jsonl
+
+# a wrong identity is recorded as a mismatch, the file as missing recipients
+age -r age12phkzssndd5axajas2h74vtge62c86xjhd6u9anyanqhzvdg6sps0xthgl -o wrong.age input
+! age -d -i key.txt --audit-log wrong.jsonl wrong.age
+stderr 'no identity matched any of the recipients'
+grep '"kind":"identity".*"failure":"identity_mismatch"' wrong.jsonl
+grep '"kind":"file".*"failure":"missing_recipient"' wrong.jsonl
+! grep 'AGE-SECRET-KEY' wrong.jsonl
+! grep $WORK wrong.jsonl
+
+# a corrupt file is recorded as corrupt
+! age -d -i key.txt --audit-log corrupt.jsonl corrupt.age
+grep '"kind":"file".*"failure":"corrupt_file"' corrupt.jsonl
+
+# an unreadable input is recorded as read_denied
+! age -d -i key.txt --audit-log denied.jsonl missing.age
+stderr 'failed to open input file'
+grep '"kind":"file".*"failure":"read_denied"' denied.jsonl
+
+# an unwritable audit log only warns and doesn't affect decryption
+age -d -i key.txt --audit-log nosuchdir/audit.jsonl test.age
+stderr 'warning: cannot open audit log'
+cmp stdout input
+! exists nosuchdir/audit.jsonl
+
+# passphrase decryption records the scrypt identity, a wrong passphrase is a mismatch
+[!linux] [!darwin] skip # no pty support
+stdin input
+ttyin terminal
+age -p -o pass.age
+! stderr .
+ttyin terminal
+age -d --audit-log pass.jsonl pass.age
+cmp stdout input
+grep '"identity":"scrypt".*"result":"success"' pass.jsonl
+! grep 'password' pass.jsonl
+ttyin wrong
+! age -d --audit-log passwrong.jsonl pass.age
+stderr 'incorrect passphrase'
+grep '"failure":"identity_mismatch"' passwrong.jsonl
+! grep 'PASSWORD' passwrong.jsonl
+
+-- input --
+test
+-- key.txt --
+# created: 2021-02-02T13:09:43+01:00
+# public key: age1xmwwc06ly3ee5rytxm9mflaz2u56jjj36s0mypdrwsvlul66mv4q47ryef
+AGE-SECRET-KEY-1EGTZVFFV20835NWYV6270LXYVK2VKNX2MMDKWYKLMGR48UAWX40Q2P2LM0
+-- corrupt.age --
+this is not an age file at all
+-- terminal --
+password
+password
+-- wrong --
+PASSWORD

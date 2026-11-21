@@ -45,10 +45,16 @@ func (i *LazyScryptIdentity) Unwrap(stanzas []*age.Stanza) (fileKey []byte, err 
 		// matched any recipient". That makes sense in the API, where there
 		// might be multiple configured ScryptIdentity. Since in cmd/age there
 		// can be only one, return a better error message.
-		return nil, fmt.Errorf("incorrect passphrase")
+		return nil, errIncorrectPassphrase
 	}
 	return fileKey, err
 }
+
+// errIncorrectPassphrase is returned by LazyScryptIdentity.Unwrap when the
+// passphrase doesn't match the file. It's a sentinel so that the audit log
+// can classify the failure as an identity mismatch; its message is
+// user-facing and must not change.
+var errIncorrectPassphrase = errors.New("incorrect passphrase")
 
 type EncryptedIdentity struct {
 	Contents       []byte

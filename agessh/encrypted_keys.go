@@ -71,6 +71,14 @@ func (i *EncryptedSSHIdentity) Recipient() age.Recipient {
 	return i.recipient
 }
 
+// SSHFingerprint returns the standard SHA256 fingerprint of the SSH public
+// key corresponding to the identity, in the format used by "ssh-keygen -l"
+// (e.g. "SHA256:..."). It identifies the key without exposing any secret
+// material.
+func (i *EncryptedSSHIdentity) SSHFingerprint() string {
+	return ssh.FingerprintSHA256(i.pubKey)
+}
+
 // Unwrap implements age.Identity. If the private key is still encrypted, and
 // any of the stanzas match the public key, it will request the passphrase. The
 // decrypted private key will be cached after the first successful invocation.

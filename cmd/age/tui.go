@@ -37,6 +37,7 @@ func printf(format string, v ...any) {
 func errorf(format string, v ...any) {
 	l.Printf("age: error: "+format, v...)
 	l.Printf("age: report unexpected or unhelpful errors at https://filippo.io/age/report")
+	flushAudit()
 	os.Exit(1)
 }
 
@@ -50,6 +51,7 @@ func errorWithHint(error string, hints ...string) {
 		l.Printf("age: hint: %s", hint)
 	}
 	l.Printf("age: report unexpected or unhelpful errors at https://filippo.io/age/report")
+	flushAudit()
 	os.Exit(1)
 }
 

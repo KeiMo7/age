@@ -113,6 +113,14 @@ func (i *RSAIdentity) Recipient() *RSARecipient {
 	}
 }
 
+// SSHFingerprint returns the standard SHA256 fingerprint of the SSH public
+// key corresponding to the identity, in the format used by "ssh-keygen -l"
+// (e.g. "SHA256:..."). It identifies the key without exposing any secret
+// material.
+func (i *RSAIdentity) SSHFingerprint() string {
+	return ssh.FingerprintSHA256(i.sshKey)
+}
+
 func (i *RSAIdentity) Unwrap(stanzas []*age.Stanza) ([]byte, error) {
 	return multiUnwrap(i.unwrap, stanzas)
 }
@@ -301,6 +309,14 @@ func (i *Ed25519Identity) Recipient() *Ed25519Recipient {
 		sshKey:         i.sshKey,
 		theirPublicKey: i.ourPublicKey,
 	}
+}
+
+// SSHFingerprint returns the standard SHA256 fingerprint of the SSH public
+// key corresponding to the identity, in the format used by "ssh-keygen -l"
+// (e.g. "SHA256:..."). It identifies the key without exposing any secret
+// material.
+func (i *Ed25519Identity) SSHFingerprint() string {
+	return ssh.FingerprintSHA256(i.sshKey)
 }
 
 func (i *Ed25519Identity) Unwrap(stanzas []*age.Stanza) ([]byte, error) {

@@ -31,7 +31,7 @@ import (
 const usage = `Usage:
     age [--encrypt] (-r RECIPIENT | -R PATH)... [--armor] [-o OUTPUT] [INPUT]
     age [--encrypt] --passphrase [--armor] [-o OUTPUT] [INPUT]
-    age --decrypt [-i PATH]... [-o OUTPUT] [INPUT]
+    age --decrypt [-i PATH]... [-o OUTPUT] [--audit-log PATH] [INPUT]
 
 Options:
     -e, --encrypt               Encrypt the input to the output. Default if omitted.
@@ -42,6 +42,7 @@ Options:
     -r, --recipient RECIPIENT   Encrypt to the specified RECIPIENT. Can be repeated.
     -R, --recipients-file PATH  Encrypt to recipients listed at PATH. Can be repeated.
     -i, --identity PATH         Use the identity file at PATH. Can be repeated.
+    --audit-log PATH            Append decryption audit records to PATH. Only with -d.
     --version                   Print the version.
 
 INPUT defaults to standard input, and OUTPUT defaults to standard output.
@@ -116,6 +117,7 @@ func main() {
 		outFlag                          string
 		decryptFlag, encryptFlag         bool
 		passFlag, versionFlag, armorFlag bool
+		auditLogFlag                     string
 		recipientFlags                   multiFlag
 		recipientsFileFlags              multiFlag
 		identityFlags                    identityFlags
@@ -139,6 +141,7 @@ func main() {
 	flag.Func("i", "identity (can be repeated)", identityFlags.addIdentityFlag)
 	flag.Func("identity", "identity (can be repeated)", identityFlags.addIdentityFlag)
 	flag.Func("j", "data-less plugin (can be repeated)", identityFlags.addPluginFlag)
+	flag.StringVar(&auditLogFlag, "audit-log", "", "append decryption audit records to `FILE` (JSON Lines)")
 	flag.Parse()
 
 	if versionFlag {
@@ -200,6 +203,10 @@ func main() {
 				"did you mean to use -i/--identity to specify a private key?")
 		}
 	default: // encrypt
+		if auditLogFlag != "" {
+			errorWithHint("--audit-log can't be used in encryption mode",
+				"did you forget to specify -d/--decrypt?")
+		}
 		if len(identityFlags) > 0 && !encryptFlag {
 			errorWithHint("-i/--identity and -j can't be used in encryption mode unless symmetric encryption is explicitly selected with -e/--encrypt",
 				"did you forget to specify -d/--decrypt?")
@@ -229,6 +236,11 @@ func main() {
 		}
 	}, "identity file")
 
+	if auditLogFlag != "" {
+		theAuditor = newAuditor(auditLogFlag)
+		defer flushAudit()
+	}
+
 	var inUseFiles []string
 	for _, i := range identityFlags {
 		if i.Type != "i" {
@@ -243,14 +255,23 @@ func main() {
 	var in io.Reader = os.Stdin
 	var out io.Writer = os.Stdout
 	if name := flag.Arg(0); name != "" && name != "-" {
+		if theAuditor != nil {
+			theAuditor.target = relativizePath(name)
+		}
 		inUseFiles = append(inUseFiles, absPath(name))
 		f, err := os.Open(name)
 		if err != nil {
+			if theAuditor != nil {
+				theAuditor.recordFileOutcome("failure", failureReadDenied)
+			}
 			errorf("failed to open input file %q: %v", name, err)
 		}
 		defer f.Close()
 		in = f
 	} else {
+		if theAuditor != nil {
+			theAuditor.target = "-"
+		}
 		stdinInUse = true
 		if decryptFlag && term.IsTerminal(os.Stdin) {
 			// If the input comes from a TTY, assume it's armored, and buffer up
@@ -470,14 +491,20 @@ func decryptNotPass(flags identityFlags, in io.Reader, out io.Writer) {
 			if err != nil {
 				errorf("reading %q: %v", f.Value, err)
 			}
-			identities = append(identities, ids...)
+			identities = append(identities, wrapAuditIdentities(ids, f.Value)...)
 		case "j":
 			id, err := plugin.NewIdentityWithoutData(f.Value, plugin.NewTerminalUI(printf, warningf))
 			if err != nil {
 				errorf("initializing %q: %v", f.Value, err)
 			}
-			identities = append(identities, id)
+			identities = append(identities, wrapAuditIdentities([]age.Identity{id}, "")...)
 		}
+	}
+	if theAuditor != nil {
+		// The audit wrapper hides the concrete identity types from the
+		// native-first sort inside age.Decrypt, so apply the same
+		// ordering now to keep the decryption behavior unchanged.
+		sortAuditIdentities(identities)
 	}
 	identities = append(identities, rejectScryptIdentity{})
 	decrypt(identities, in, out)
@@ -488,6 +515,11 @@ func decryptPass(in io.Reader, out io.Writer) {
 		// If there is an scrypt recipient (it will have to be the only one and)
 		// this identity will be invoked.
 		lazyScryptIdentity,
+	}
+	if theAuditor != nil {
+		identities = []age.Identity{
+			theAuditor.wrapIdentity(&LazyScryptIdentity{passphrasePromptForDecryption}, ""),
+		}
 	}
 
 	decrypt(identities, in, out)
@@ -511,23 +543,32 @@ func decrypt(identities []age.Identity, in io.Reader, out io.Writer) {
 	}
 
 	r, err := age.Decrypt(in, identities...)
+	if err != nil && theAuditor != nil {
+		theAuditor.recordFileOutcome("failure", theAuditor.classifyDecryptError(err))
+	}
 	if e := new(plugin.NotFoundError); errors.As(err, &e) {
 		errorWithHint(err.Error(),
 			fmt.Sprintf("you might want to install the %q plugin", e.Name),
 			"visit https://age-encryption.org/awesome#plugins for a list of available plugins")
 	} else if errors.As(err, new(*age.NoIdentityMatchError)) &&
-		len(identities) == 1 && identities[0] == lazyScryptIdentity {
+		len(identities) == 1 && isLazyScryptIdentity(identities[0]) {
 		errorWithHint("the file is not passphrase-encrypted, identities are required",
 			"specify identities with -i/--identity or -j to decrypt this file")
 	} else if err != nil {
 		errorf("%v", err)
 	}
 	if _, err := io.Copy(out, r); err != nil {
+		if theAuditor != nil {
+			theAuditor.recordFileOutcome("failure", failureCorruptFile)
+		}
 		errorf("%v", err)
 	}
 	// Trigger the lazyOpener even if r is empty, if Copy succeeded.
 	if _, err := out.Write(nil); err != nil {
 		errorf("%v", err)
+	}
+	if theAuditor != nil {
+		theAuditor.recordFileOutcome("success", "")
 	}
 }
 

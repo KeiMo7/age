@@ -5,7 +5,7 @@ age(1) -- simple, modern, and secure file encryption
 
 `age` [`--encrypt`] (`-r` <RECIPIENT> | `-R` <PATH>)... [`--armor`] [`-o` <OUTPUT>] [<INPUT>]<br>
 `age` [`--encrypt`] `--passphrase` [`--armor`] [`-o` <OUTPUT>] [<INPUT>]<br>
-`age` `--decrypt` [`-i` <PATH> | `-j` <PLUGIN>]... [`-o` <OUTPUT>] [<INPUT>]<br>
+`age` `--decrypt` [`-i` <PATH> | `-j` <PLUGIN>]... [`-o` <OUTPUT>] [`--audit-log` <PATH>] [<INPUT>]<br>
 
 ## DESCRIPTION
 
@@ -141,6 +141,79 @@ overhead per recipient, plus 16 bytes every 64KiB of plaintext.
 
     This is equivalent to using `-i`/`--identity` with a file that contains a
     single plugin `IDENTITY` that encodes no plugin-specific data.
+
+* `--audit-log`=<PATH>:
+    Append decryption audit records to the file at <PATH>, one JSON object
+    per line (JSON Lines). See the [AUDIT LOG][] section for the record
+    format and the known limitations.
+
+    This option can only be used with `-d`/`--decrypt`. Audit logging never
+    affects decryption: if <PATH> can't be opened or a record can't be
+    written, a warning is printed and decryption continues.
+
+## AUDIT LOG
+
+With `--audit-log`, every decryption attempt appends records to the specified
+log file, which is created with mode 0600 if it doesn't exist. Each attempt
+writes one record per identity that was tried, plus one file-level record
+with the overall outcome. Each line is a JSON object with these fields:
+
+  * `v`: record format version, currently 1. The semantics of version 1
+    fields are frozen: future versions may add fields, but will not change
+    the meaning of existing ones.
+
+  * `time`: time of the attempt, in RFC 3339 format, UTC.
+
+  * `kind`: "`identity`" for a per-identity attempt record, or "`file`" for
+    the file-level outcome.
+
+  * `identity`: a non-secret identifier of the identity: the recipient
+    encoding ("`age1...`") for native keys, the SSH fingerprint
+    ("`SHA256:...`") for SSH keys, "`scrypt`" for passphrase decryption, or
+    a reference to the identity file for encrypted identity files. Empty if
+    no identity matched. Secret key material is never recorded.
+
+  * `identity_type`: the type of the identity ("`x25519`", "`hybrid`",
+    "`ssh-rsa`", "`ssh-ed25519`", "`ssh-encrypted`", "`plugin`", "`scrypt`",
+    "`encrypted-identity`"). Only present in "`identity`" records.
+
+  * `file`: the decrypted file, as a path relative to the working directory.
+    Absolute paths and the home directory are never recorded.
+
+  * `result`: "`success`" or "`failure`".
+
+  * `failure`: the failure category, if any: "`identity_mismatch`" (the
+    identity didn't match the file's recipients, or the passphrase was
+    wrong), "`corrupt_file`" (the input couldn't be parsed or
+    authenticated), "`missing_recipient`" (no identity matched any of the
+    file's recipients), "`read_denied`" (the input couldn't be opened),
+    "`identity_error`" (an identity failed for another reason), or
+    "`plugin_missing`" (a required plugin is not installed).
+
+Since every record carries a timestamp, an identity identifier, a file, and
+a result, the log can be aggregated by identity, by file, or by time window
+with standard JSON tools. For example, per-identity success rates:
+
+    $ jq -r 'select(.kind=="identity") | [.identity, .result] | @tsv' audit.jsonl |
+        awk '{n[$1]++; if ($2=="success") ok[$1]++}
+             END {for (i in n) printf "%s\t%d attempts\t%.1f%% success\n", i, n[i], 100*ok[i]/n[i]}' |
+        sort
+
+Known limitations:
+
+  * Records are appended with a single unbuffered write each, so records
+    produced before the process is killed are already complete on disk.
+    Records that fail to write (e.g. a full filesystem) are retried on the
+    next record and once more at exit; if the log remains unwritable, they
+    are lost and a warning reports how many. Since the log is an append-only
+    JSON Lines file, records captured elsewhere can be backfilled by
+    concatenating them onto the file.
+
+  * A record that fails to serialize is skipped and counted, and the count
+    is reported with a warning at exit.
+
+  * If the log file can't be opened (e.g. the directory is not writable), a
+    warning is printed and decryption proceeds without logging.
 
 ## RECIPIENTS AND IDENTITIES
 
