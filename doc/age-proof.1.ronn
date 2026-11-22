@@ -1,0 +1,115 @@
+age-proof(1) -- accountable provenance for age encrypted files
+================================================================
+
+## SYNOPSIS
+
+`age-proof sign` (`-k` <SIGNER>)... [`--armor`] [`--expires` <RFC3339>] [`-o` <OUT>] [<INPUT>...]<br>
+`age-proof verify` (`-t` <TRUSTLIST>)... [`--list`] [<INPUT>...]<br>
+`age-proof decrypt` (`-t` <TRUSTLIST>)... [`-i` <IDENTITY>]... [`--require-proof`] [`-o` <OUT>] [<INPUT>...]<br>
+`age-proof unwrap` [`-o` <OUT>] [<INPUT>]<br>
+`age-proof keygen` [`-y`] [`-o` <OUT>] [<INPUT>]<br>
+
+## DESCRIPTION
+
+`age-proof` adds an accountable provenance layer (the `age-proof-v1`
+envelope) around an existing age encrypted file, without changing a single
+byte of the inner age ciphertext. The envelope carries one or more Ed25519
+signatures that cover every inner byte through SHA-256, together with the
+inner length and the signer's key id. Files that carry no envelope keep
+working exactly as before; files that carry one are verified against a
+receiver-maintained trust list before any plaintext is produced.
+
+The identity of a signer is established solely by the receiver's trust
+list; the envelope never carries a self-asserted name. Verification is
+streaming and memory-bounded: header parsing is capped, payload processing
+uses a fixed 32 KiB buffer, and no plaintext is written until every
+signature, the length and the digest have all validated. A rejected
+envelope produces no output and leaves no partial file.
+
+A reader that does not understand the layer can use `age-proof unwrap` to
+recover the exact inner age file and decrypt it with an unmodified age(1)
+build.
+
+## SUBCOMMANDS
+
+* `sign`:
+    Wrap each age encrypted <INPUT> in a provenance envelope signed with
+    every `-k`/`--key` signer. Armored age input is de-armored first so the
+    signed bytes are always the canonical binary age ciphertext. Plaintext,
+    empty files, and files that already carry an envelope are rejected.
+
+    Directories are processed recursively. In directory mode outputs are
+    written next to their inputs (`.age.proof` for binary envelopes,
+    `.age.aproof` for armored ones) and a failure on one file never stops
+    the others; the exit code is 8 if any input failed.
+
+* `verify`:
+    Check every <INPUT> against the merged trust lists. With `--list`,
+    each verified signer's fingerprint and trust-list label is reported.
+
+* `decrypt`:
+    Verify the envelope (if present) against the trust lists, then decrypt
+    the inner age file with the given identities, or prompt for a
+    passphrase when none are supplied. The output file is created only
+    after verification succeeds. With `--require-proof`, files without an
+    envelope are rejected instead of handled as legacy files.
+
+* `unwrap`:
+    Extract the exact inner age ciphertext without verifying it. Intended
+    only for interop with readers that lack provenance support.
+
+* `keygen`:
+    Generate a new Ed25519 signer key in OpenSSH PEM format, or with `-y`
+    derive the public key (both the `ssh-ed25519` and the native
+    `age-proof-1` form) from <INPUT>.
+
+## TRUST LIST FORMAT
+
+A UTF-8 text file, one entry per line; blank lines and lines starting with
+`#` are ignored. A missing, unreadable, or empty trust list is always a
+failure, never an implicit accept.
+
+    ssh-ed25519 AAAA... optional label
+    age-proof-1... optional label
+    revoked: <key line>
+    expires: 2030-01-01T00:00:00Z <key line>
+
+## EXIT STATUS
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | success |
+| 1 | generic failure (usage, I/O, age decryption) |
+| 2 | trust list unreadable or empty |
+| 3 | no provenance envelope present |
+| 4 | envelope malformed, signature invalid, digest/length mismatch, truncation, append, or cross-file transplant |
+| 5 | signer not in the trust list |
+| 6 | signer revoked in the trust list |
+| 7 | proof or trust entry expired |
+| 8 | batch processing completed with one or more per-file failures |
+
+## SECURITY PROPERTIES
+
+* Each signature binds the SHA-256 and length of every inner byte, so any
+  single-bit change (header, nonce area, chunk boundary, length field, or
+  payload) fails verification before output starts.
+* Signer identity comes only from the local trust list.
+* Passphrases, private keys, and plaintext never appear in log lines or
+  error messages.
+* Non-seekable input is staged in a 0600 temporary file holding only
+  ciphertext; plaintext is never spooled.
+* The outer envelope uses a distinct PEM type (`AGE PROVENANCE FILE`) and
+  a distinct binary magic, so it cannot be mistaken for or pollute the
+  inner age format.
+
+## EXAMPLE
+
+    $ age-proof keygen -o signer.txt
+    $ age -r age1... -o report.tar.gz.age report.tar.gz
+    $ age-proof sign -k signer.txt --armor -o report.tar.gz.age.aproof report.tar.gz.age
+    $ age-proof verify -t trusted-signers.txt report.tar.gz.age.aproof
+    $ age-proof decrypt -t trusted-signers.txt -i identity.txt -o report.tar.gz report.tar.gz.age.aproof
+
+## SEE ALSO
+
+age(1), age-keygen(1)

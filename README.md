@@ -323,3 +323,30 @@ Size breakdown (assuming it decrypts successfully):
 
 Tip: for machine-readable output, use --json.
 ```
+
+## Accountable provenance with age-proof
+
+The `age-proof` command wraps an existing age ciphertext in an
+`age-proof-v1` envelope carrying one or more Ed25519 signatures, without
+modifying the inner age file. It answers "who produced this archive?" for
+receivers who can already decrypt it: every signature covers the SHA-256
+and length of every inner byte, and signer identity comes solely from a
+receiver-maintained trust list.
+
+```console
+$ age-proof keygen -o signer.txt
+$ age-proof sign -k signer.txt --armor -o report.age.aproof report.age
+$ age-proof verify -t trusted-signers.txt report.age.aproof
+$ age-proof decrypt -t trusted-signers.txt -i identity.txt -o report report.age.aproof
+```
+
+Files without an envelope keep decrypting exactly as before (optionally
+rejected with `--require-proof`); an envelope that fails any check is
+refused before a single plaintext byte is written, with distinct exit
+codes for missing proof, invalid proof, unknown signer, revoked signer,
+expired proof, and an unusable trust list. Verification is streaming and
+memory-bounded, works with single files, recursive directory batches, and
+standard input, in binary or PEM text form, over passphrase- or
+recipient-encrypted age files. Readers without the layer can recover the
+inner ciphertext with `age-proof unwrap` and decrypt it using plain `age`.
+See `age-proof(1)` for the full format and trust list specification.
